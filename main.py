@@ -34,7 +34,7 @@ from qse_ranking import score_and_select
 from telegram_notify import send_telegram, build_report
 
 MIN_BARS = 250          # candle minimum supaya indikator (EMA200 dkk) valid
-MAX_SYMBOLS = None      # set angka (mis. 50) utk uji cepat; None = semua pasar
+MAX_SYMBOLS = 20      # set angka (mis. 50) utk uji cepat; None = semua pasar
 
 
 def process_symbol(symbol: str, df, btc_df):
