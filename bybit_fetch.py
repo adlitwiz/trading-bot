@@ -10,7 +10,7 @@ import time
 import requests
 import pandas as pd
 
-BASE_URL = "https://api.bybit.com"
+BASE_URL = "https://www.bybit-global.com/id-ID/"
 
 
 def get_all_perp_symbols(quote: str = "USDT") -> list:
