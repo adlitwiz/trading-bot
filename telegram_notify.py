@@ -1,51 +1,91 @@
-"""
-QSE v135 - Fase 6b: Kirim Notifikasi ke Telegram
-=====================================================
-Pakai Bot API Telegram biasa (requests, tanpa library tambahan).
-Token & chat_id diambil dari environment variable (diisi GitHub Secrets),
-TIDAK PERNAH ditulis langsung di kode.
-"""
-
+"""QSE v148 - kirim laporan ke Telegram (token & chat id dari environment / GitHub Secrets)."""
+import html
+import math
 import os
+import time
 import requests
 
-TELEGRAM_API = "https://api.telegram.org/bot{token}/sendMessage"
+API = "https://api.telegram.org/bot{t}/sendMessage"
 
 
-def send_telegram(text: str, token: str = None, chat_id: str = None, parse_mode: str = "HTML"):
+def send(blocks, token=None, chat_id=None):
     token = token or os.environ.get("TELEGRAM_BOT_TOKEN")
     chat_id = chat_id or os.environ.get("TELEGRAM_CHAT_ID")
     if not token or not chat_id:
-        raise RuntimeError("TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID belum diset di environment.")
-    url = TELEGRAM_API.format(token=token)
-    # Telegram batas 4096 karakter per pesan -> pecah kalau kepanjangan
-    chunks = [text[i:i + 3800] for i in range(0, len(text), 3800)] or [text]
-    for chunk in chunks:
-        r = requests.post(url, data={"chat_id": chat_id, "text": chunk, "parse_mode": parse_mode,
-                                      "disable_web_page_preview": True}, timeout=15)
-        if r.status_code != 200:
-            print(f"[WARN] gagal kirim Telegram: {r.status_code} {r.text}")
+        print("[INFO] TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID kosong, pesan hanya dicetak.")
+        return
+    msgs, cur = [], ""
+    for b in blocks:
+        if len(cur) + len(b) + 2 > 3800 and cur:
+            msgs.append(cur)
+            cur = ""
+        cur += b + "\n\n"
+    if cur.strip():
+        msgs.append(cur)
+    for m in msgs:
+        for k in range(4):
+            try:
+                r = requests.post(API.format(t=token), data={"chat_id": chat_id, "text": m, "parse_mode": "HTML",
+                                                             "disable_web_page_preview": True}, timeout=20)
+                if r.status_code == 200:
+                    break
+                if r.status_code == 429:
+                    time.sleep(int(r.json().get("parameters", {}).get("retry_after", 5)) + 1)
+                    continue
+                print("[WARN] Telegram", r.status_code, r.text[:200])
+                break
+            except Exception as e:
+                print("[WARN] Telegram", e)
+                time.sleep(3)
+        time.sleep(1.1)
 
 
-def format_signal(symbol: str, sig: dict) -> str:
-    arah_emoji = "🟢" if sig["arah"] == "LONG" else "🔴"
-    return (
-        f"{arah_emoji} <b>{symbol}</b> — {sig['arah']} | Grade <b>{sig['grade']}</b>\n"
-        f"Pola: {sig['pola']}\n"
-        f"Order: {sig['order_type']}\n"
-        f"Entry: <code>{sig['entry']}</code>\n"
-        f"SL: <code>{sig['sl']}</code>\n"
-        f"TP1: <code>{sig['tp1']}</code>   TP2: <code>{sig['tp2']}</code>\n"
-        f"WR {sig['wr']}% | PF {sig['pf']} | Net {sig['net_r']}R | Jarak {sig['jarak_atr']} ATR\n"
-    )
+def fp(x, tick):
+    if x is None or (isinstance(x, float) and math.isnan(x)):
+        return "-"
+    d = max(0, int(round(-math.log10(tick)))) if tick > 0 else 4
+    if tick > 0:
+        x = round(x / tick) * tick
+    return f"{x:.{d}f}"
 
 
-def build_report(all_signals: dict, run_time_str: str) -> str:
-    """all_signals: {symbol: [sig_dict, ...]} -- hasil sudah difilter grade A + EKSEKUSI."""
-    if not all_signals:
-        return f"📊 QSE v135 Bot — {run_time_str}\n\nTidak ada sinyal Rapor A + EKSEKUSI candle 4H ini."
-    lines = [f"📊 <b>QSE v135 Bot</b> — {run_time_str}", f"Sinyal Rapor A + EKSEKUSI: {sum(len(v) for v in all_signals.values())}\n"]
-    for symbol, sigs in all_signals.items():
-        for sig in sigs:
-            lines.append(format_signal(symbol, sig))
-    return "\n".join(lines)
+def e(s):
+    return html.escape(str(s))
+
+
+def sinyal(r, s, tag, risk_usdt=0.0):
+    t = r["tick"]
+    head = ("GOLDEN MOMENT | " if s["golden"] else "") + f"{r['symbol']} {s['arah']}"
+    lab = f"Rapor robot {r['rapor']} | Mutu pola {s['mutu']} | EKSEKUSI" + (" | Zona emas" if s["zona_emas"] else "")
+    rows = [
+        f"➡️ <b>{e(head)}</b>" + (f"  [{tag}]" if tag else ""),
+        e(lab),
+        f"Pola: {e(s['pola'])} ({e(s['alasan_pola'])})",
+        f"Order: {e(s['order'])} | Saran {s['slot']}" + (" | entry pernah tersentuh" if s.get("tersentuh") else ""),
+        f"Entry: <code>{fp(s['entry'], t)}</code>",
+        f"SL: <code>{fp(s['sl'], t)}</code>",
+        f"TP1: <code>{fp(s['tp1'], t)}</code> (+{s['rr1']:.2f}R, tutup separuh)",
+        f"TP2: <code>{fp(s['tp2'], t)}</code> (+{s['rr2']:.2f}R, SL geser ke entry)",
+        f"Pola {s['win']}TP/{s['loss']}SL | WR {s['wr']:.0f}% | PF {s['pf']:.2f} | {s['net_r']:+.1f}R | E {s['ev']:+.2f}R",
+        f"Robot {r['trd']} trade | WR {r['wr']:.0f}% | PF {r['pf']:.2f} | {r['net_r']:+.1f}R",
+        f"{e(r['btc'])} naik {r['bProb']:.0f}% | {e(r['regime'])} | jarak {s['jarak_atr']:.1f} ATR | peluang isi {s['peluang']}%",
+    ]
+    if risk_usdt > 0:
+        risk = max(abs(s["entry"] - s["sl"]), t)
+        qty = risk_usdt / risk
+        rows.append(f"Lot risiko {risk_usdt:g} USDT: {qty:.4g} koin, nilai posisi {qty * s['entry']:,.0f} USDT")
+    rows.append(f'<a href="https://www.tradingview.com/chart/?symbol=BYBIT:{r["symbol"]}.P">Buka chart</a> | {e(r["feed"])}')
+    return "\n".join(rows)
+
+
+def hasil(ev, it, tick_map):
+    t = tick_map.get(it["sym"], 0.0001)
+    tf = "1J" if it.get("tf") == "60" else "4J"
+    arti = {"TERISI": "ORDER TERISI", "TP1": "KENA TP1, tutup separuh, SL geser ke entry", "TP2": "KENA TP2, selesai",
+            "SL": "KENA SL", "BE": "keluar di entry setelah TP1"}
+    if ev == "BATAL":
+        txt = f"BATALKAN {it['order']}, {it.get('why', '')}"
+    else:
+        txt = arti[ev]
+    r = f" ({it['result_r']:+.2f}R)" if ev in ("TP2", "SL", "BE") and "result_r" in it else ""
+    return f"<b>{e(it['sym'])} {it['arah']}</b> TF {tf} | {e(it['pola'])} | {e(txt)}{r} | Entry {fp(it['entry'], t)}"
